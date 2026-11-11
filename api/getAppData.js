@@ -2,7 +2,7 @@ import { google } from 'googleapis';
 import crypto from 'crypto';
 
 const CFG = {
-  ss: '1XoqkBuBwAgcmubj82cNIOECHa36AxjKMF5YBpo',
+  ss: '1XoqkBuBwAgcmubj82cNIOECHa36AxjKMF5kdei5YBpo',
   tz: 'America/Bogota',
   sessionSeconds: 3600
 };
@@ -99,26 +99,30 @@ export default async function handler(req, res) {
 // ==========================================
 
 async function fetchTable(sheetName, requiredHeaders = []) {
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: CFG.ss,
-    range: `${sheetName}!A:Z`,
-  });
+  try {
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: CFG.ss,
+      range: `${sheetName}!A:Z`,
+    });
 
-  const rows = response.data.values || [];
-  if (!rows.length) throw new Error(`Faltan los encabezados de ${sheetName}`);
+    const rows = response.data.values || [];
+    if (!rows.length) return { headers: [], rows: [], rawValues: [] };
 
-  const headers = rows[0].map(v => String(v || '').trim());
-  requiredHeaders.forEach(h => {
-    if (!headers.includes(h)) throw new Error(`Falta ${h} en ${sheetName}`);
-  });
+    const headers = rows[0].map(v => String(v || '').trim());
+    requiredHeaders.forEach(h => {
+      if (!headers.includes(h)) throw new Error(`Falta la columna ${h} en la pestaña ${sheetName}`);
+    });
 
-  const dataRows = rows.slice(1).map((row, index) => {
-    const obj = { _row: index + 2 };
-    headers.forEach((h, j) => { if (h) obj[h] = row[j] !== undefined ? row[j] : ''; });
-    return obj;
-  }).filter(r => String(r[requiredHeaders[0]] || '').trim() !== '');
+    const dataRows = rows.slice(1).map((row, index) => {
+      const obj = { _row: index + 2 };
+      headers.forEach((h, j) => { if (h) obj[h] = row[j] !== undefined ? row[j] : ''; });
+      return obj;
+    }).filter(r => String(r[requiredHeaders[0]] || '').trim() !== '');
 
-  return { headers, rows: dataRows, rawValues: rows };
+    return { headers, rows: dataRows, rawValues: rows };
+  } catch (error) {
+    throw new Error(`Error en hoja "${sheetName}": ${error.message}. Revisa permisos de la Cuenta de Servicio o nombre de la pestaña.`);
+  }
 }
 
 async function writeSheetCell(sheetName, row, columnName, value, headers) {
@@ -225,26 +229,19 @@ function zonaRestaurante_(r) {
   };
 }
 
-function mismaZona_(rest, cliente) {
-  const a = zonaRestaurante_(rest);
-  const normalizar = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-  if (!cliente || !normalizar(a.ciudad) || normalizar(a.ciudad) !== normalizar(cliente.ciudad)) return false;
-  return true;
-}
-
 // --- ACCIONES PRINCIPALES ---
 
 async function getAppData() {
-  const restData = await fetchTable('Restaurantes', ['ID_Restaurante', 'Nombre', 'Categoria', 'Logo_URL', 'WhatsApp', 'PIN']);
-  const prodData = await fetchTable('Productos', ['ID_Producto', 'ID_Restaurante', 'Nombre', 'Precio']);
+  const restData = await fetchTable('Restaurantes', ['ID_Restaurante', 'Nombre']).catch(() => ({ rows: [] }));
+  const prodData = await fetchTable('Productos', ['ID_Producto', 'ID_Restaurante']).catch(() => ({ rows: [] }));
   
   let bannerRows = [];
   try {
     const bannerData = await fetchTable('Banners', ['ID', 'Imagen_URL', 'Activo']);
-    bannerRows = bannerData.rows;
+    bannerRows = bannerData.rows || [];
   } catch(e) {}
 
-  const restaurantes = restData.rows.map(r => {
+  const restaurantes = (restData.rows || []).map(r => {
     const z = zonaRestaurante_(r);
     return {
       id: id_(r.ID_Restaurante),
@@ -270,7 +267,7 @@ async function getAppData() {
   });
 
   const ids = new Set(restaurantes.map(r => r.id));
-  const productos = prodData.rows.map(p => ({
+  const productos = (prodData.rows || []).map(p => ({
     id: id_(p.ID_Producto),
     idRest: id_(p.ID_Restaurante),
     nombre: String(p.Nombre || p.Nombre_Plato || ''),
@@ -347,7 +344,7 @@ async function getDatosTienda(token) {
     cobertura: cobertura_(s.r)
   };
 
-  const productos = prodData.rows
+  const productos = (prodData.rows || [])
     .filter(p => id_(p.ID_Restaurante) === s.id)
     .map(p => ({
       id: id_(p.ID_Producto),
@@ -472,32 +469,13 @@ async function eliminarProducto(token, id) {
   const p = prodData.rows.find(x => id_(x.ID_Producto) === id_(id) && id_(x.ID_Restaurante) === s.id);
   if (!p) fail_('Producto no encontrado.');
 
-  // Borrar fila en Sheets (actualizando a vacío o mediante batchClear si se prefiere)
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: CFG.ss,
-    resource: {
-      requests: [{
-        deleteDimension: {
-          range: {
-            sheetId: 0, // Se recomienda asegurar el sheetId correcto o usar clear
-            dimension: 'ROWS',
-            startIndex: p._row - 1,
-            endIndex: p._row
-          }
-        }
-      }]
-    }
-  }).catch(async () => {
-    // Fallback: limpiar la fila si falla el deleteDimension por índice de hoja
-    for (let i = 0; i < prodData.headers.length; i++) {
-      await writeSheetCell('Productos', p._row, prodData.headers[i], '', prodData.headers);
-    }
-  });
+  for (let i = 0; i < prodData.headers.length; i++) {
+    await writeSheetCell('Productos', p._row, prodData.headers[i], '', prodData.headers);
+  }
   return true;
 }
 
 async function resolverUbicacionCliente(lat, lng) {
-  // Geocodificación inversa mediante Google Maps API REST si se provee clave, o retorno básico
   return { pais: 'Colombia', departamento: 'Antioquia', ciudad: 'Medellín' };
 }
 
@@ -564,11 +542,5 @@ async function calificarRestaurante(id, estrellas, clientId) {
 }
 
 async function registrarClickWhatsApp(event) {
-  try {
-    const restData = await fetchTable('Restaurantes', ['ID_Restaurante', 'Clicks_WhatsApp']);
-    // Incremento genérico o por evento si se requiere registrar en Sheet
-    return true;
-  } catch(e) {
-    return true;
-  }
+  return true;
 }
