@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
-    "googleapis": "^128.0.0"
+    "@supabase/supabase-js": "^2.39.0"
   }
 }
