@@ -11,7 +11,7 @@ const memoryCache = new Map();
 // Cliente de Supabase usando las variables de entorno de Vercel
 function getSupabase() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  const key = process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
   if (!url || !key) throw new Error('Faltan credenciales de Supabase en el entorno');
   return createClient(url, key);
 }
@@ -179,10 +179,22 @@ async function getAppData() {
 
 async function loginRestaurante(id, pin) {
   const cleanId = id_(text_(id, 80, true));
-  const cleanPin = text_(pin, 80, true);
+  const cleanPin = String(pin || '').trim();
   const supabase = getSupabase();
-  const { data: rows, error } = await supabase.from('Restaurantes').select('*').eq('id_restaurante', cleanId).single();
-  if (error || !rows || String(rows.pin || rows.PIN || '').trim() !== cleanPin) fail_('ID o PIN incorrectos.');
+  
+  const { data: rows, error } = await supabase.from('Restaurantes').select('*');
+  if (error || !rows) fail_('Error al conectar con la base de datos.');
+
+  const r = rows.find(x => {
+    const dbId = id_(x.id_restaurante || x.ID_Restaurante || x.id || x.ID);
+    return dbId === cleanId;
+  });
+
+  if (!r) fail_('El restaurante no existe.');
+
+  const dbPin = String(r.pin || r.PIN || r.Pin || '').trim();
+  if (dbPin !== cleanPin) fail_('ID o PIN incorrectos.');
+
   const token = crypto.randomBytes(32).toString('hex');
   memoryCache.set('session:' + hash_(token), { id: cleanId, exp: Date.now() + CFG.sessionSeconds * 1000 });
   return { token };
@@ -195,26 +207,46 @@ async function getSession(token) {
   const session = memoryCache.get('session:' + hash_(token));
   if (!session || session.exp < Date.now()) fail_('Sesión vencida.');
   const supabase = getSupabase();
-  const { data: r, error } = await supabase.from('Restaurantes').select('*').eq('id_restaurante', session.id).single();
-  if (error || !r) fail_('Sesión inválida.');
+  const { data: rows, error } = await supabase.from('Restaurantes').select('*');
+  if (error || !rows) fail_('Sesión inválida.');
+  const r = rows.find(x => id_(x.id_restaurante || x.ID_Restaurante || x.id || x.ID) === session.id);
+  if (!r) fail_('Sesión inválida.');
   return { id: session.id, r };
 }
 
 async function getDatosTienda(token) {
   const s = await getSession(token);
   const supabase = getSupabase();
-  const { data: prodRows } = await supabase.from('Productos').select('*').eq('id_restaurante', s.id);
+  const { data: prodRows } = await supabase.from('Productos').select('*');
   const rObj = {
-    id: id_(s.r.id_restaurante || s.r.ID_Restaurante), nombre: String(s.r.nombre || s.r.Nombre || ''), categoria: String(s.r.categoria || s.r.Categoria || ''),
-    logo: String(s.r.logo_url || s.r.Logo_URL || ''), portada: String(s.r.portada_url || s.r.Portada_URL || ''), whatsapp: String(s.r.whatsapp || s.r.WhatsApp || ''),
-    apertura: time_(s.r.horario_apertura || s.r.Horario_Apertura), cierre: time_(s.r.horario_cierre || s.r.Horario_Cierre), estado: String(s.r.estado_manual || s.r.Estado_Manual || 'Abierto'),
-    abierto: open_(s.r), costoEnvio: money_(s.r.costo_envio || s.r.Costo_Envio, true), envioGratis: bool_(s.r.envio_gratis || s.r.Envio_Gratis),
-    tiempo: String(s.r.tiempo_entrega || s.r.Tiempo_Entrega || '30-45'), calificacion: rating_(s.r), municipio: String(s.r.municipio || s.r.Municipio || ''), cobertura: cobertura_(s.r)
+    id: id_(s.r.id_restaurante || s.r.ID_Restaurante || s.r.id || s.r.ID), 
+    nombre: String(s.r.nombre || s.r.Nombre || ''), 
+    categoria: String(s.r.categoria || s.r.Categoria || ''),
+    logo: String(s.r.logo_url || s.r.Logo_URL || ''), 
+    portada: String(s.r.portada_url || s.r.Portada_URL || ''), 
+    whatsapp: String(s.r.whatsapp || s.r.WhatsApp || ''),
+    apertura: time_(s.r.horario_apertura || s.r.Horario_Apertura), 
+    cierre: time_(s.r.horario_cierre || s.r.Horario_Cierre), 
+    estado: String(s.r.estado_manual || s.r.Estado_Manual || 'Abierto'),
+    abierto: open_(s.r), 
+    costoEnvio: money_(s.r.costo_envio || s.r.Costo_Envio, true), 
+    envioGratis: bool_(s.r.envio_gratis || s.r.Envio_Gratis),
+    tiempo: String(s.r.tiempo_entrega || s.r.Tiempo_Entrega || '30-45'), 
+    calificacion: rating_(s.r), 
+    municipio: String(s.r.municipio || s.r.Municipio || ''), 
+    cobertura: cobertura_(s.r)
   };
-  const productos = (prodRows || []).map(p => ({
-    id: id_(p.id_producto || p.ID_Producto), idRest: id_(p.id_restaurante || p.ID_Restaurante), nombre: String(p.nombre || p.Nombre || ''),
-    desc: String(p.descripcion || p.Descripcion || ''), precio: money_(p.precio || p.Precio), precioAnterior: money_(p.precio_anterior || p.Precio_Anterior, true),
-    esTop: bool_(p.es_top || p.Es_Top), categoria: String(p.categoria_plato || p.Categoria_Plato || ''), foto: String(p.foto_url || p.Foto_URL || ''), disponible: bool_((p.disponible !== false) && (p.Disponible !== false))
+  const productos = (prodRows || []).filter(p => id_(p.id_restaurante || p.ID_Restaurante) === s.id).map(p => ({
+    id: id_(p.id_producto || p.ID_Producto), 
+    idRest: id_(p.id_restaurante || p.ID_Restaurante), 
+    nombre: String(p.nombre || p.Nombre || ''),
+    desc: String(p.descripcion || p.Descripcion || ''), 
+    precio: money_(p.precio || p.Precio), 
+    precioAnterior: money_(p.precio_anterior || p.Precio_Anterior, true),
+    esTop: bool_(p.es_top || p.Es_Top), 
+    categoria: String(p.categoria_plato || p.Categoria_Plato || ''), 
+    foto: String(p.foto_url || p.Foto_URL || ''), 
+    disponible: bool_((p.disponible !== false) && (p.Disponible !== false))
   }));
   return { rest: rObj, productos };
 }
