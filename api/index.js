@@ -8,7 +8,6 @@ const CFG = {
 
 const memoryCache = new Map();
 
-// Cliente de Supabase usando las variables de entorno de Vercel
 function getSupabase() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
@@ -86,7 +85,6 @@ export default async function handler(req, res) {
   }
 }
 
-// Funciones de apoyo de lógica
 function fail_(message) { throw new Error('APP: ' + message); }
 function id_(v) { let s = String(v == null ? '' : v).trim(); if (s === '1') s = 'REST-001'; return s.toUpperCase(); }
 function text_(v, max, required) { const s = String(v == null ? '' : v).trim(); if ((required && !s) || s.length > max) fail_('Revisa los campos.'); return s; }
@@ -192,7 +190,7 @@ async function loginRestaurante(id, pin) {
 
   if (!r) fail_('El restaurante no existe.');
 
-  const dbPin = String(r.pin || r.PIN || r.Pin || '').trim();
+  const dbPin = String(r.PIN || r.pin || r.Pin || '').trim();
   if (dbPin !== cleanPin) fail_('ID o PIN incorrectos.');
 
   const token = crypto.randomBytes(32).toString('hex');
